@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设备台账维护 · 唯一索引在线补建</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1f2430; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2563eb;
+    --ok: #15803d; --ok-bg: #dcfce7;
+    --warn: #b45309; --warn-bg: #fef3c7;
+    --bad: #b91c1c; --bad-bg: #fee2e2;
+    --info: #1d4ed8; --info-bg: #dbeafe;
+    --neutral: #4b5563; --neutral-bg: #e5e7eb;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { padding: 18px 24px 6px; }
+  header h1 { font-size: 20px; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); }
+  main { padding: 12px 24px 40px; max-width: 1180px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           padding: 14px 16px; margin-bottom: 16px; }
+  .panel h2 { font-size: 15px; margin: 0 0 10px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .row.top { margin-top: 0; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+           padding: 7px 16px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: wait; }
+  button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+  button.danger { background: #fff; color: var(--bad); border: 1px solid var(--bad); }
+  input[type=text] { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+                     min-width: 180px; }
+  input.wide { min-width: 280px; }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  code { background: #eef1f5; border-radius: 4px; padding: 1px 5px;
+         font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .badge { display: inline-block; border-radius: 999px; padding: 2px 12px; font-size: 12.5px;
+           font-weight: 600; white-space: nowrap; }
+  .badge.ok { color: var(--ok); background: var(--ok-bg); }
+  .badge.warn { color: var(--warn); background: var(--warn-bg); }
+  .badge.bad { color: var(--bad); background: var(--bad-bg); }
+  .badge.info { color: var(--info); background: var(--info-bg); }
+  .badge.neutral { color: var(--neutral); background: var(--neutral-bg); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid var(--line); padding: 5px 8px; text-align: left;
+           vertical-align: top; font-size: 12.5px; }
+  th { background: #f1f3f6; font-weight: 600; }
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 4px 12px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .error-banner { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad);
+                  border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+  .ok-banner { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok);
+               border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .nav a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  .nav a:hover { text-decoration: underline; }
+  .steps { margin: 6px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; }
+  .steps li { margin: 2px 0; }
+  .pillbtn { padding: 3px 10px; font-size: 12.5px; }
+  #toast { position: fixed; right: 20px; bottom: 20px; max-width: 420px; z-index: 50; }
+  #toast .t { border-radius: 8px; padding: 10px 14px; margin-top: 8px; font-size: 13px;
+              box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+  #toast .t.err { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); }
+  #toast .t.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>设备台账维护 · 设备编号唯一索引在线补建</h1>
+  <p>台账已有数据，值班 DBA 用 <code>CREATE UNIQUE INDEX CONCURRENTLY</code> 补建唯一索引，
+     构建期间日常读写照常。页面所有状态均取自数据库实况
+     （<code>pg_index</code> / <code>pg_stat_activity</code>）。
+     <span class="nav">｜<a href="/">← 返回并发写入观测台</a></span>
+  </p>
+</header>
+<main>
+  <section class="panel">
+    <h2>演练流程</h2>
+    <ol class="steps">
+      <li>点“重置为演示台账”：灌入约 40 万台设备，其中 <b>刻意留一对重号</b> <code>DEV-DUP-1</code>；</li>
+      <li>构建期间可随时在下方“录入设备”写数据，验证读写不阻塞；</li>
+      <li>第一次“补建唯一索引”：因重号失败，库内留下 <b>INVALID</b> 索引；</li>
+      <li>在“重号清单”里把其中一台改成新编号，消除重号；</li>
+      <li>点“重试补建”：系统先确认上次构建已结束，只清理本补建留下的无效索引，再重新构建；</li>
+      <li>索引生效后，录入重复编号会被数据库以 <code>23505</code> 拒绝。</li>
+    </ol>
+    <div class="row top">
+      <button type="button" id="resetBtn" class="secondary">重置为演示台账（含一对重号）</button>
+      <button type="button" id="refreshBtn" class="secondary">刷新实况</button>
+      <span class="hint" id="updatedAt"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>库内实况</h2>
+    <div id="liveBanner"></div>
+    <div class="kv" id="kv"></div>
+  </section>
+
+  <section class="panel">
+    <h2>补建唯一索引</h2>
+    <div class="hint" style="margin-bottom:8px">
+      固定对象：表 <code>devices</code>、列 <code>device_no</code>、索引
+      <code>devices_device_no_uidx</code>。重试时只会 DROP 这个固定命名的 INVALID 索引，
+      不触碰任何其他对象。服务重启后若索引已生效，重试会直接沿用、不重复构建。
+    </div>
+    <div id="jobBox"></div>
+    <div class="row">
+      <button type="button" id="buildBtn">补建 / 重试唯一索引（CONCURRENTLY）</button>
+      <span class="hint" id="buildHint"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>录入设备（日常写入，构建期间也可用）</h2>
+    <div class="row top">
+      <input type="text" id="inNo" placeholder="设备编号 device_no，如 DEV-100001">
+      <input type="text" id="inName" placeholder="设备名称">
+      <input type="text" id="inLoc" placeholder="位置（可空）">
+      <button type="button" id="addBtn" class="secondary">录入</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>重号清单（更正编号后再重试补建）</h2>
+    <div id="dupBox"><span class="muted">加载中……</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>台账数据（最近 20 条）</h2>
+    <div class="row top" style="margin-bottom:8px">
+      <input type="text" id="q" class="wide" placeholder="按编号或名称过滤（可空）">
+      <button type="button" id="queryBtn" class="secondary pillbtn">查询</button>
+    </div>
+    <div id="devBox"><span class="muted">加载中……</span></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pollTimer = null;
+
+const PHASE_BADGE = {
+  absent:     ["尚无补建索引", "neutral"],
+  building:   ["索引正在构建", "info"],
+  invalid:    ["索引无效（INVALID）", "bad"],
+  valid:      ["唯一索引已生效", "ok"],
+  non_unique: ["同名索引非唯一（需人工核对）", "warn"],
+};
+const JOB_BADGE = {
+  starting: ["启动中", "info"],
+  precheck: ["确认上次构建已结束", "info"],
+  cleanup_invalid: ["清理无效索引中", "warn"],
+  building: ["构建中", "info"],
+  valid: ["已生效", "ok"],
+  failed: ["构建失败", "bad"],
+};
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+
+function toast(msg, ok) {
+  const box = el("div", "t " + (ok ? "ok" : "err"), msg);
+  $("toast").appendChild(box);
+  setTimeout(() => box.remove(), 6000);
+}
+
+async function api(path, opts) {
+  const resp = await fetch(path, opts || {});
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw Object.assign(new Error(data.error || ("HTTP " + resp.status)),
+                                    { pgcode: data.pgcode });
+  return data;
+}
+
+function esc(v) { return v === null || v === undefined ? "NULL" : String(v); }
+
+function renderStatus(s) {
+  const [ptext, pcls] = PHASE_BADGE[s.phase] || [s.phase, "neutral"];
+  const banner = $("liveBanner");
+  banner.textContent = "";
+  banner.appendChild(el("span", "badge " + pcls, ptext));
+  banner.appendChild(el("span", "muted", "　" + s.phase_detail));
+
+  const kv = $("kv");
+  kv.textContent = "";
+  const rows = [
+    ["表", s.table + (s.table_exists ? "" : "（尚未创建，点重置演示台账）")],
+    ["设备行数", s.device_count === null ? "—" : String(s.device_count)],
+    ["目标索引", s.index],
+    ["pg_index.indisvalid", s.indisvalid === null ? "—（索引不存在）" : String(s.indisvalid)],
+    ["pg_index.indisready", s.indisready === null ? "—" : String(s.indisready)],
+    ["pg_index.indislive", s.indislive === null ? "—" : String(s.indislive)],
+    ["重号组数 / 涉及行数", s.duplicate_groups + " / " + s.duplicate_rows],
+    ["在飞构建会话", s.inflight.length
+        ? s.inflight.map(p => "pid " + p.pid + "（" + p.state
+            + (p.wait_event ? "，" + p.wait_event : "") + "）").join("；")
+        : "无"],
+  ];
+  rows.forEach(([k, v]) => {
+    kv.appendChild(el("div", "k", k));
+    kv.appendChild(el("div", "mono", v));
+  });
+
+  // 任务区
+  const jb = $("jobBox");
+  jb.textContent = "";
+  const job = s.job;
+  if (job) {
+    const [jtext, jcls] = JOB_BADGE[job.state] || [job.state, "neutral"];
+    const line = el("div");
+    line.appendChild(el("span", "badge " + jcls, jtext));
+    const meta = [];
+    meta.push("第 " + job.attempt + " 次尝试");
+    if (job.duration_s !== null) meta.push("耗时 " + job.duration_s + "s");
+    if (job.note) meta.push(job.note);
+    line.appendChild(el("span", "muted", "　" + meta.join("　｜　")));
+    jb.appendChild(line);
+    if (job.error) jb.appendChild(el("div", "error-banner",
+      (job.pgcode ? job.pgcode + " " : "") + job.error));
+    if (job.state === "valid") jb.appendChild(el("div", "ok-banner",
+      "唯一索引已生效：今后任何重复 device_no 写入都会被数据库拒绝。"));
+  } else {
+    jb.appendChild(el("div", "muted", "本进程尚未发起过补建。"));
+  }
+
+  // 构建按钮可用性
+  const building = s.phase === "building";
+  $("buildBtn").disabled = building || !s.table_exists;
+  $("buildHint").textContent = building
+    ? "构建进行中：页面按库内实况自动刷新，此时仍可正常录入设备"
+    : (s.phase === "valid" ? "索引已生效，点击会直接沿用、不重复构建" : "");
+  $("resetBtn").disabled = building;
+  $("addBtn").disabled = !s.table_exists;
+
+  // 轮询控制：构建中持续轮询，结束后停止
+  if (building) {
+    if (!pollTimer) pollTimer = setInterval(refreshAll, 800);
+  } else if (pollTimer) {
+    clearInterval(pollTimer); pollTimer = null;
+  }
+  $("updatedAt").textContent = "实况更新于 " + new Date().toLocaleTimeString();
+}
+
+async function renderDuplicates() {
+  const box = $("dupBox");
+  try {
+    const dups = await api("/api/maintenance/duplicates");
+    if (!dups.length) {
+      box.textContent = "";
+      box.appendChild(el("span", "muted", "当前没有重号。"));
+      return;
+    }
+    const table = el("table");
+    const head = el("tr");
+    ["重复编号", "重复行数", "涉及设备 id", "更正操作"].forEach((h) =>
+      head.appendChild(el("th", null, h)));
+    table.appendChild(head);
+    dups.forEach((d) => {
+      const tr = el("tr");
+      tr.appendChild(el("td", "mono", d.device_no));
+      tr.appendChild(el("td", null, String(d.count)));
+      tr.appendChild(el("td", "mono", d.ids.join(", ")));
+      const td = el("td");
+      d.ids.forEach((id, i) => {
+        const inp = el("input");
+        inp.type = "text"; inp.placeholder = "id " + id + " 的新编号";
+        inp.value = i === 0 ? d.device_no + "-FIX" : "";
+        const btn = el("button", "secondary pillbtn", "更正 id " + id);
+        btn.style.marginLeft = "6px";
+        btn.addEventListener("click", async () => {
+          if (!inp.value.trim()) { toast("新编号不能为空", false); return; }
+          btn.disabled = true;
+          try {
+            await api("/api/maintenance/devices/correct", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id, device_no: inp.value.trim() }),
+            });
+            toast("id " + id + " 已更正为 " + inp.value.trim(), true);
+            await refreshAll();
+          } catch (e) { toast(String(e.message || e), false); btn.disabled = false; }
+        });
+        const wrap = el("div");
+        wrap.style.margin = "3px 0";
+        wrap.appendChild(inp); wrap.appendChild(btn);
+        td.appendChild(wrap);
+      });
+      tr.appendChild(td);
+      table.appendChild(tr);
+    });
+    box.textContent = "";
+    box.appendChild(table);
+  } catch (e) {
+    box.textContent = "";
+    box.appendChild(el("div", "error-banner", String(e.message || e)));
+  }
+}
+
+async function renderDevices() {
+  const box = $("devBox");
+  try {
+    const q = $("q").value.trim();
+    const devices = await api("/api/maintenance/devices" + (q ? "?q=" + encodeURIComponent(q) : ""));
+    if (!devices.length) {
+      box.textContent = "";
+      box.appendChild(el("span", "muted", "没有数据。"));
+      return;
+    }
+    const table = el("table");
+    const head = el("tr");
+    ["id", "设备编号", "名称", "位置", "创建时间"].forEach((h) =>
+      head.appendChild(el("th", null, h)));
+    table.appendChild(head);
+    devices.forEach((d) => {
+      const tr = el("tr");
+      [d.id, d.device_no, d.name, d.location, d.created_at].forEach((v) =>
+        tr.appendChild(el("td", "mono", esc(v))));
+      table.appendChild(tr);
+    });
+    box.textContent = "";
+    box.appendChild(table);
+  } catch (e) {
+    box.textContent = "";
+    box.appendChild(el("div", "error-banner", String(e.message || e)));
+  }
+}
+
+async function refreshAll() {
+  const s = await api("/api/maintenance/status");
+  renderStatus(s);
+  await Promise.all([renderDuplicates(), renderDevices()]);
+}
+
+$("resetBtn").addEventListener("click", async () => {
+  $("resetBtn").disabled = true;
+  try {
+    const s = await api("/api/maintenance/reset", { method: "POST" });
+    renderStatus(s);
+    await Promise.all([renderDuplicates(), renderDevices()]);
+    toast("演示台账已重置（含一对重号 DEV-DUP-1）", true);
+  } catch (e) {
+    toast(String(e.message || e), false);
+  } finally {
+    $("resetBtn").disabled = false;
+  }
+});
+
+$("refreshBtn").addEventListener("click", () => refreshAll().catch((e) =>
+  toast(String(e.message || e), false)));
+$("queryBtn").addEventListener("click", () => renderDevices().catch((e) =>
+  toast(String(e.message || e), false)));
+
+$("addBtn").addEventListener("click", async () => {
+  const payload = {
+    device_no: $("inNo").value.trim(),
+    name: $("inName").value.trim(),
+    location: $("inLoc").value.trim(),
+  };
+  if (!payload.device_no || !payload.name) {
+    toast("设备编号和名称必填", false); return;
+  }
+  $("addBtn").disabled = true;
+  try {
+    const r = await api("/api/maintenance/devices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    toast("已录入，id=" + r.id, true);
+    $("inNo").value = ""; $("inName").value = ""; $("inLoc").value = "";
+    await refreshAll();
+  } catch (e) {
+    toast(String(e.message || e), false);
+  } finally {
+    $("addBtn").disabled = false;
+  }
+});
+
+$("buildBtn").addEventListener("click", async () => {
+  try {
+    const s = await api("/api/maintenance/index/build", { method: "POST" });
+    renderStatus(s);
+    if (s.phase !== "building") await refreshAll();
+  } catch (e) {
+    toast(String(e.message || e), false);
+    await refreshAll().catch(() => {});
+  }
+});
+
+refreshAll().catch((e) => toast("初始化失败：" + (e.message || e), false));
+</script>
+</body>
+</html>
